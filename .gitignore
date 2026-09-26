@@ -1,1 +1,6 @@
 proj/
+.*.sw[a-z]
+.*.un~
+*test*/
+*.tsv
+*.txt

@@ -22,7 +22,8 @@ For state-conditioned statistics, the canonical output from `calc_sasa.py` or
 
 ## 1. Conceptual workflow
 
-For a selected chemical group, the analysis is:
+For a selected chemical group, the analysis is deliberately split into three
+layers:
 
 ```text
 protein trajectories
@@ -30,7 +31,7 @@ protein trajectories
       v
 calc_sasa.py
       |
-      |  frame-wise raw LCPO SASA
+      | frame-wise raw LCPO SASA
       v
 protein_sasa.tsv
       |
@@ -39,28 +40,29 @@ protein_sasa.tsv
       |                                      v
       |                               calc_refsasa.py
       |                                      |
-      |                                      | chemistry/protonation-specific
+      |                                      | chemistry/state-specific
       |                                      | reference SASA
       |                                      v
       |                                  refsasa.tsv
       |                                      |
       +-------------------+------------------+
                           |
-             authoritative state table
-             with local lambda columns
+              authoritative state table
+              with local lambda coordinates
+              (+ tautomer x for His)
                           |
                           v
-                    calc_fsasa.py
+                     calc_fsasa.py
                           |
                           | frame-wise fSASA
                           v
-                     fsasa.tsv
+                      fsasa.tsv
                           |
                           v
-                partition_by_state.py
+                 partition_by_state.py
                           |
                           v
-             state-conditioned statistics
+              state-conditioned statistics
 ```
 
 The frame-wise normalization is
@@ -68,19 +70,22 @@ The frame-wise normalization is
 \[
 fSASA_i =
 \frac{SASA_{\mathrm{protein},i}}
-     {\langle SASA_{\mathrm{reference}}\rangle_{\mathrm{chemistry,protonation}}}
+     {\langle SASA_{\mathrm{reference}}\rangle_{\mathrm{chemistry,state}}}
 \]
 
-where the denominator is selected according to the **local protonation state**
-of the site in that frame.
+where the denominator is selected according to the **local chemical state** of
+the site in that frame.
 
-The reference key is:
+The reference key remains:
 
 ```text
 forcefield + chemistry + site_definition + protonation
 ```
 
-For example:
+The field name `protonation` is retained for backward compatibility, but its
+allowed values depend on the lambda mode.
+
+For ordinary one-coordinate titratable groups:
 
 ```text
 ff19SB + ASP + carboxylate_oxygens + H
@@ -89,8 +94,18 @@ ff19SB + GLU + carboxylate_oxygens + H
 ff19SB + GLU + carboxylate_oxygens + deprot
 ```
 
-Biological identities such as `D52` and `E35` are deliberately **not** part of
-the reference key.
+For histidine:
+
+```text
+ff19SB + HIS + <site_definition> + HIP
+ff19SB + HIS + <site_definition> + HID
+ff19SB + HIS + <site_definition> + HIE
+```
+
+Biological identities such as `D52`, `E35`, or `H15` are deliberately **not**
+part of the reference key. The same chemistry-level reference can therefore be
+reused for another biological site only when the force field and atom/site
+definition are identical.
 
 ---
 
@@ -108,6 +123,7 @@ statistics.
 Typical uses include:
 
 - catalytic carboxylate oxygen SASA,
+- histidine side-chain or ring-atom SASA,
 - arbitrary residue or atom-group SASA,
 - protein SASA observables that will later be partitioned by protonation state,
 - the raw numerator for fSASA.
@@ -128,7 +144,7 @@ offset = 1.4 Å
 nbrcut = 2.5 Å
 ```
 
-For the HEWL catalytic carboxylates, the selections are:
+For the validated HEWL catalytic carboxylate analysis, the selections are:
 
 ```text
 E35_COO  :36@OE1,OE2
@@ -269,19 +285,22 @@ treated as a valid completed analysis.
 
 `calc_refsasa.py` generates the **denominator** used for fSASA normalization.
 
-It is run on a model compound or model peptide containing the chemical group
-of interest. For this project, ASP and GLU model tripeptides are analyzed
-separately.
+It is run on a model compound or model peptide containing the chemical group of
+interest. It supports two state-classification modes:
+
+- `--lambda-mode single` — legacy one-coordinate `H`/`deprot` references for
+  ASP, GLU, and other ordinary single-coordinate titratable groups;
+- `--lambda-mode his` — histidine-aware `HIP`/`HID`/`HIE` references using the
+  Amber protonation and neutral-tautomer coordinates.
 
 The script:
 
 1. calculates frame-wise partial LCPO SASA for the reference selection;
 2. maps every coordinate frame to an absolute MD step;
 3. exact-joins that step to the corresponding lambda record;
-4. classifies the local protonation state;
-5. excludes intermediate/mixed lambda frames from each clean reference
-   ensemble;
-6. computes a protonated (`H`) and deprotonated (`deprot`) ensemble mean;
+4. classifies the local chemical state;
+5. excludes intermediate/mixed frames from clean reference ensembles;
+6. computes one ensemble-mean denominator for every required clean state;
 7. updates a persistent chemistry-keyed reference table.
 
 It does **not** compute protein fSASA.
@@ -297,7 +316,7 @@ site_definition
 protonation
 ```
 
-Examples:
+Examples for single-coordinate groups:
 
 ```text
 ff19SB  ASP  carboxylate_oxygens  H
@@ -306,22 +325,102 @@ ff19SB  GLU  carboxylate_oxygens  H
 ff19SB  GLU  carboxylate_oxygens  deprot
 ```
 
-This makes the reference table reusable for any ASP or GLU site analyzed with
-the same force field and site definition.
+Examples for histidine:
 
-## Local protonation classification
+```text
+ff19SB  HIS  histidine_sidechain  HIP
+ff19SB  HIS  histidine_sidechain  HID
+ff19SB  HIS  histidine_sidechain  HIE
+```
+
+The exact `site_definition` string is project-defined and must describe the
+same atom selection used for both model-reference and protein SASA.
+
+## Single-coordinate mode
+
+`--lambda-mode single` is the default and preserves the original behavior.
 
 The default clean-state thresholds are:
 
 ```text
-lambda <= 0.2  -> H
-lambda >= 0.8  -> deprot
-0.2 < lambda < 0.8 -> mixed
+lambda <= 0.2       -> H
+lambda >= 0.8       -> deprot
+0.2 < lambda < 0.8  -> mixed
 ```
 
-These can be changed with `--low` and `--high`, but the thresholds used for
-reference generation and subsequent `calc_fsasa.py` analysis must remain
-consistent.
+The lambda step and value columns are selected explicitly with:
+
+```text
+--lambda-step-col
+--lambda-value-col
+```
+
+`--chemistry HIS` is intentionally rejected in this mode so neutral HID and HIE
+cannot be accidentally pooled into one denominator.
+
+## Histidine mode
+
+Use:
+
+```text
+--lambda-mode his
+```
+
+for histidine model-compound trajectories.
+
+In this mode the script reads the Amber lambda-file `ires` and `itauto` headers.
+For the selected His `ires`:
+
+```text
+itauto = 1  -> protonation coordinate lambda
+itauto = 2  -> neutral-tautomer coordinate x
+```
+
+The His `ires` can be supplied explicitly:
+
+```text
+--lambda-resid N
+```
+
+or, if omitted, the script requires that exactly one `ires` in the lambda file
+contains one `itauto=1` variable and one `itauto=2` variable.
+
+Physical-state assignment is:
+
+```text
+lambda <= low                         -> HIP
+lambda >= high and x <= low           -> x-low tautomer
+lambda >= high and x >= high          -> x-high tautomer
+low < lambda < high                   -> mixed
+lambda >= high and low < x < high     -> neutral_tautomer_mixed
+```
+
+`HIP` is assigned independently of `x`.
+
+The mapping of the two neutral `x` end states is supplied explicitly:
+
+```text
+--x-low-tautomer HID|HIE
+--x-high-tautomer HID|HIE
+```
+
+For the force-field parameterizations used in the HEWL/H15 work:
+
+```text
+c22:
+    x low  -> HIE
+    x high -> HID
+
+ff14SB / ff19SB:
+    x low  -> HID
+    x high -> HIE
+```
+
+The script requires the two endpoints to map to different tautomers.
+
+Frames with intermediate protonation lambda or neutral-intermediate `x` remain
+in the audit table but do not contribute to any `HIP`, `HID`, or `HIE`
+denominator.
 
 ## Exact frame/lambda matching
 
@@ -345,16 +444,19 @@ Behavior is:
   fatal error;
 - nearest-neighbor lambda matching is never allowed.
 
+In His mode, reset/restarted lambda step counters are first unwrapped into a
+strictly increasing step series before exact matching. The unwrapping logic is
+the same monotonic-counter strategy used by the H15 analysis.
+
 ## Block-SEM diagnostic
 
 Reference statistics include a block SEM.
 
 Blocks are formed on the **complete original coordinate timeline for each
-trajectory first**. Protonation-state frames are selected only after block
-boundaries have been established.
+trajectory first**. State frames are selected only after block boundaries have
+been established.
 
-Thus the block definition is independent of the protonation-state residence
-pattern.
+Thus the block definition is independent of state residence.
 
 The block SEM is a diagnostic of temporal variability; the denominator itself
 is the full clean-state ensemble mean.
@@ -373,7 +475,7 @@ fSASA denominator and is treated as an error.
 ```text
 python3 calc_refsasa.py \
     --forcefield FORCEFIELD \
-    --chemistry ASP_OR_GLU \
+    --chemistry CHEMISTRY \
     --site-definition SITE_DEFINITION \
     --selection CPPTRAJ_MASK \
     -p TOPOLOGY \
@@ -386,8 +488,12 @@ python3 calc_refsasa.py \
     [--start 1] \
     [--stop last] \
     [--stride 1] \
+    [--lambda-mode single|his] \
     [--lambda-step-col 0] \
     [--lambda-value-col 1] \
+    [--lambda-resid N] \
+    [--x-low-tautomer HID|HIE] \
+    [--x-high-tautomer HID|HIE] \
     [--low 0.2] \
     [--high 0.8] \
     [--blocks 10] \
@@ -481,6 +587,43 @@ H frames                6423
 deprot frames           5124
 ```
 
+## Histidine reference command template
+
+The exact His model-peptide residue and molecule masks must be verified from
+each topology before running. Once known, the general command is:
+
+```bash
+python3 calc_refsasa.py \
+    --forcefield ff19SB \
+    --chemistry HIS \
+    --site-definition histidine_sidechain \
+    --selection 'HIS_REFERENCE_SELECTION' \
+    -p MODEL_HIS.prmtop \
+    -t 'arex.ph*.nc' \
+    -l 'arex.ph*.lambda' \
+    --solutemask 'MODEL_PEPTIDE_SOLUTEMASK' \
+    --image-anchor 'MODEL_PEPTIDE_SOLUTEMASK' \
+    --first-frame-step FIRST_STEP \
+    --frame-step-interval STEP_INTERVAL \
+    --lambda-mode his \
+    --x-low-tautomer HID \
+    --x-high-tautomer HIE \
+    --jobs N \
+    --workdir model_refsasa_work \
+    -o refsasa.tsv \
+    --force
+```
+
+For c22, reverse the two `x` endpoint mappings:
+
+```text
+--x-low-tautomer HIE
+--x-high-tautomer HID
+```
+
+Do not copy the placeholder His masks into production commands without topology
+verification.
+
 ## Persistent reference-table behavior
 
 The same `refsasa.tsv` can be updated by multiple model-chemistry runs.
@@ -493,19 +636,12 @@ forcefield + chemistry + site_definition + protonation
 
 and leaves unrelated rows intact.
 
-After the validated ff19SB ASP and GLU calculations, the table contains four
-rows:
-
-```text
-ff19SB  ASP  carboxylate_oxygens  H
-ff19SB  ASP  carboxylate_oxygens  deprot
-ff19SB  GLU  carboxylate_oxygens  H
-ff19SB  GLU  carboxylate_oxygens  deprot
-```
+A shared table may therefore contain both ordinary two-state references and
+His three-state references.
 
 ## Reference-table schema
 
-The current table contains 26 columns:
+The current table contains 30 columns:
 
 ```text
 forcefield
@@ -534,6 +670,10 @@ high_cutoff
 topology_file
 n_trajectories
 blocks_per_trajectory
+lambda_mode
+lambda_resid
+x_low_tautomer
+x_high_tautomer
 ```
 
 The primary denominator field is:
@@ -542,7 +682,8 @@ The primary denominator field is:
 reference_sasa_A2
 ```
 
-The additional columns provide provenance and diagnostic statistics.
+The last four fields make the state-classification provenance explicit. They
+are blank where not applicable to legacy single-coordinate calculations.
 
 ## Audit output
 
@@ -554,9 +695,29 @@ Each chemistry/reference calculation writes:
     refsasa.settings.txt
 ```
 
-The frame audit includes the coordinate/frame identifiers, exact lambda
-assignment, protonation classification, clean/matched status, and raw
-reference SASA contribution.
+The frame audit contains:
+
+```text
+forcefield
+chemistry
+site_definition
+trajectory
+pH
+lambda_file
+analysis_row
+trajectory_frame
+step
+lambda
+x
+protonation
+tautomer
+clean
+matched
+sasa_A2
+```
+
+In single-coordinate mode, `x` and `tautomer` are blank. In His mode they make
+the HIP/HID/HIE assignment independently auditable.
 
 ---
 
@@ -567,8 +728,8 @@ reference SASA contribution.
 `calc_fsasa.py` combines:
 
 - raw frame-wise protein SASA from `calc_sasa.py`;
-- local protonation coordinates from an authoritative state table;
-- chemistry/protonation-specific reference values from `calc_refsasa.py`.
+- local state coordinates from an authoritative state table;
+- chemistry/state-specific reference values from `calc_refsasa.py`.
 
 It then writes frame-wise fSASA in the same canonical observable format used by
 the rest of the analysis toolkit.
@@ -576,6 +737,8 @@ the rest of the analysis toolkit.
 `calc_fsasa.py` does **not** read coordinates and does **not** run CPPTRAJ.
 Changing a reference table or state assignment therefore does not require
 rerunning the expensive coordinate-level SASA calculation.
+
+Plain TSV and `.tsv.gz` state/input tables are supported transparently.
 
 ## Site mapping
 
@@ -585,7 +748,7 @@ Each protein observable must be mapped to:
 OBSERVABLE
 CHEMISTRY
 SITE_DEFINITION
-LOCAL_LAMBDA_COLUMN
+LOCAL_PROTONATION_LAMBDA_COLUMN
 ```
 
 For the HEWL dyad state table:
@@ -602,46 +765,151 @@ This mapping is supplied with repeated `--site` arguments:
 --site D52_COO ASP carboxylate_oxygens coupled_lambda
 ```
 
-`primary_label` and `coupled_label` are **site identity labels** such as `E35`
-and `D52`; they are not protonation-state columns and must not be passed here.
-
-## Local protonation assignment
-
-For matched state rows, `calc_fsasa.py` classifies the specified local lambda
-coordinate using:
+For His mode, the fourth field remains the **protonation** lambda column. The
+neutral-tautomer coordinate is supplied separately with:
 
 ```text
-lambda <= 0.2  -> H
-lambda >= 0.8  -> deprot
-otherwise      -> local mixed
+--tautomer-column x
 ```
 
-The reference denominator is then looked up using:
+## Single-coordinate normalization
+
+`--lambda-mode single` is the default and preserves the original behavior:
 
 ```text
-forcefield + chemistry + site_definition + local_protonation
+lambda <= 0.2       -> H
+lambda >= 0.8       -> deprot
+otherwise           -> local mixed
+```
+
+The denominator is looked up with:
+
+```text
+forcefield + chemistry + site_definition + H|deprot
+```
+
+A `HIS` site is rejected in single mode so HID/HIE cannot be silently pooled.
+
+## Histidine normalization
+
+Use:
+
+```text
+--lambda-mode his
+```
+
+for histidine.
+
+The authoritative state table must contain the protonation coordinate named in
+the `--site` mapping plus a tautomer coordinate, default:
+
+```text
+x
+```
+
+The physical-state rules are:
+
+```text
+lambda <= low                         -> HIP
+lambda >= high and x <= low           -> x-low tautomer
+lambda >= high and x >= high          -> x-high tautomer
+low < lambda < high                   -> mixed
+lambda >= high and low < x < high     -> neutral_tautomer_mixed
+```
+
+The endpoint mapping must match the corresponding reference calculation:
+
+```text
+c22:
+    --x-low-tautomer HIE
+    --x-high-tautomer HID
+
+ff14SB / ff19SB:
+    --x-low-tautomer HID
+    --x-high-tautomer HIE
+```
+
+Clean His frames use one of three reference denominators:
+
+```text
+HIP
+HID
+HIE
+```
+
+Intermediate protonation-lambda frames and neutral frames with intermediate `x`
+remain on the canonical timeline with blank fSASA.
+
+By default, when the state table contains `state` and `tautomer` columns, the
+newly classified His state is cross-checked against those labels. A mismatch is
+fatal. This validation can be disabled only explicitly with:
+
+```text
+--no-validate-his-state-labels
 ```
 
 ## Exact state-table join
 
-The default join key is:
+The canonical raw-SASA join fields are selected with:
 
 ```text
-trajectory + trajectory_frame
+--join-on trajectory,trajectory_frame
 ```
 
-The script then independently validates shared frame metadata such as
-`analysis_row`, `trajectory_frame`, `step`, and pH when populated on both
-sides.
+by default.
 
-There is no nearest-frame or nearest-step matching.
+State-side column names can be remapped without changing the canonical raw SASA
+schema:
 
-## Treatment of matched, mixed, and globally unclean frames
+```text
+--state-trajectory-column
+--state-analysis-row-column
+--state-trajectory-frame-column
+--state-step-column
+```
 
-The distinction between **local** and **global/coupled** cleanliness is
-important.
+This is specifically useful for the H15 `analyze_his.py` output, whose
+equivalent fields are:
 
-### Unmatched/outside state window
+```text
+canonical raw SASA        H15 state table
+------------------        ----------------
+trajectory                trajectory
+analysis_row               analysis_frame
+trajectory_frame           raw_coord_frame
+step                       target_md_step
+```
+
+If one table stores `arex.ph5_0` and the other stores `arex.ph5_0.nc`, use:
+
+```text
+--trajectory-key-mode stem
+```
+
+The normalized key removes only recognized trajectory-file extensions; it does
+not blindly truncate labels containing a dot.
+
+Shared frame metadata and pH are independently checked when available on both
+tables. There is no nearest-frame or nearest-step matching.
+
+## Matched and clean-state inference
+
+If the requested `--matched-column` exists, it is respected.
+
+If it does not exist, a row is considered matched when the mapped local
+protonation-lambda field is populated. This allows direct use of state tables
+such as the H15 frame table that encode unmatched rows through missing lambda
+values rather than a separate `matched` flag.
+
+Likewise, if the requested `--clean-column` exists, it is respected and
+cross-checked against the locally classified state.
+
+If it does not exist, local clean/mixed status is inferred directly from lambda
+(and, for His neutral frames, `x`).
+
+## Treatment of unavailable states
+
+### Outside/unmatched state window
 
 The row is retained in the canonical output, but `value` is blank.
 
@@ -651,7 +919,7 @@ Audit status:
 outside_state_window
 ```
 
-### Matched but local lambda is intermediate
+### Intermediate protonation lambda
 
 The row is retained, but `value` is blank.
 
@@ -661,27 +929,31 @@ Audit status:
 local_mixed
 ```
 
-### Local lambda is clean
+### His neutral frame with intermediate tautomer coordinate
 
-fSASA is calculated from the appropriate protonation-specific denominator.
+The row is retained, but `value` is blank because neither the pure-HID nor
+pure-HIE denominator applies.
 
-This is true even if the **global coupled state** is unclean because the other
-site is intermediate.
+Audit status:
 
-For example, if E35 has a clean local lambda but D52 is intermediate, the E35
-fSASA value is still chemically well defined and is retained.
+```text
+neutral_tautomer_mixed
+```
 
-Later, `partition_by_state.py` excludes globally unclean coupled-state frames
-from coupled-state summaries.
+### Clean local state
 
-This separation maximizes preservation of valid local information while
-keeping the state-conditioned analysis rigorous.
+fSASA is calculated from the matching state-specific denominator.
 
-### Consistency check
+For single-coordinate mode this is `H` or `deprot`.
 
-If the authoritative state table says a frame is globally `clean` while the
-mapped local lambda is intermediate, the script stops with an error. Such a
-case indicates inconsistent state definitions or lambda thresholds.
+For His mode this is `HIP`, `HID`, or `HIE`.
+
+If a global `clean` flag exists and says a locally mixed frame is clean, the
+script stops with an error.
+
+A locally clean site may still retain a valid fSASA when a broader coupled-state
+definition is globally unclean because another site is intermediate. This
+preserves the original dyad behavior.
 
 ## Negative values
 
@@ -703,22 +975,36 @@ Do not clamp, take absolute values, or remove them at the fSASA stage.
 ```text
 python3 calc_fsasa.py \
     --sasa RAW_SASA.tsv \
-    --states STATE_ASSIGNMENTS.tsv \
+    --states STATE_ASSIGNMENTS.tsv[.gz] \
     --references refsasa.tsv \
     --forcefield FORCEFIELD \
     --site OBSERVABLE CHEMISTRY SITE_DEFINITION LAMBDA_COLUMN \
     [--site ...] \
+    [--lambda-mode single|his] \
+    [--tautomer-column x] \
+    [--x-low-tautomer HID|HIE] \
+    [--x-high-tautomer HID|HIE] \
     [--join-on trajectory,trajectory_frame] \
+    [--trajectory-key-mode exact|stem] \
+    [--state-trajectory-column trajectory] \
+    [--state-analysis-row-column analysis_row] \
+    [--state-trajectory-frame-column trajectory_frame] \
+    [--state-step-column step] \
     [--low 0.2] \
     [--high 0.8] \
     [--clean-column clean] \
     [--matched-column matched] \
+    [--state-class-column state] \
+    [--tautomer-label-column tautomer] \
+    [--no-validate-his-state-labels] \
     [--sasa-metric sasa_lcpo] \
     [--audit-output FILE] \
     -o FSASA.tsv
 ```
 
 ## Example: HEWL ff19SB E35/D52 fSASA
+
+The validated single-coordinate dyad workflow remains unchanged:
 
 ```bash
 python3 /home/wayyne/cphmd/ez_cphmd/anal/sasa/calc_fsasa.py \
@@ -746,30 +1032,40 @@ Negative raw SASA rows             : 5735
 Negative fSASA rows                : 5389
 ```
 
-The accounting identities are:
+These validated numbers refer to the catalytic-dyad analysis and are not
+expected values for the H15 His analysis.
 
-```text
-185400 - 5400 - 6995 = 173005
+## H15 His normalization template
+
+Once the H15 raw-SASA observable and reference table have been generated, the
+H15 `analyze_his.py` state table can be used directly with column remapping.
+
+The general pattern is:
+
+```bash
+python3 calc_fsasa.py \
+    --sasa H15_raw_sasa.tsv \
+    --states H15_FRAME_TABLE.tsv.gz \
+    --references refsasa.tsv \
+    --forcefield ff19SB \
+    --site H15_SIDECHAIN HIS histidine_sidechain lambda \
+    --lambda-mode his \
+    --tautomer-column x \
+    --x-low-tautomer HID \
+    --x-high-tautomer HIE \
+    --join-on trajectory,trajectory_frame \
+    --trajectory-key-mode stem \
+    --state-analysis-row-column analysis_frame \
+    --state-trajectory-frame-column raw_coord_frame \
+    --state-step-column target_md_step \
+    -o H15_fsasa.tsv
 ```
 
-and
+For c22, reverse the two `x` endpoint mappings.
 
-```text
-173005 - 6605 = 166400
-```
-
-Thus every globally clean coupled-state observation has a valid fSASA value.
-
-The globally mixed accounting also closes:
-
-```text
-6800 globally mixed dyad frames x 2 sites = 13600 site observations
-
-6995 locally mixed
-6605 locally clean while the other site is mixed
-----
-13600
-```
+The `H15_SIDECHAIN` observable name and `histidine_sidechain` site-definition
+string are examples; the production run script should use the exact names
+chosen for the final H15 SASA definition.
 
 ## Canonical output schema
 
@@ -810,13 +1106,7 @@ By default:
 <output_stem>.audit.tsv
 ```
 
-For example:
-
-```text
-test_COO_fsasa_allph.audit.tsv
-```
-
-The audit records:
+The current audit records:
 
 ```text
 trajectory
@@ -831,13 +1121,20 @@ solutemask
 raw_sasa_A2
 chemistry
 site_definition
+lambda_mode
 lambda_column
 local_lambda
+tautomer_column
+local_tautomer_coordinate
 local_protonation
+local_tautomer
+reference_state
 state_clean
 state_matched
 state_code
 state_label
+source_state
+source_tautomer
 reference_forcefield
 reference_sasa_A2
 reference_method
@@ -851,8 +1148,9 @@ A settings file is also written:
 <output>.settings.txt
 ```
 
-It records the input files, join key, lambda thresholds, site mappings, and
-actual denominator values used.
+It records the input files, join definition, state-column remapping, lambda
+mode, threshold/mapping choices, site mappings, state-label validation setting,
+and actual denominator values used.
 
 ---
 
@@ -1020,6 +1318,66 @@ max
 
 ---
 
+## Histidine workflow template
+
+The His workflow uses the same three-layer architecture but three clean
+reference states rather than two.
+
+### Step H1 — Calculate raw protein SASA
+
+Run `calc_sasa.py` on the protein trajectories using the final verified H15 atom
+selection and complete-protein `solutemask`.
+
+`calc_sasa.py` remains state-agnostic. No His lambda or tautomer information is
+used at this stage.
+
+### Step H2 — Generate force-field-specific His references
+
+Run `calc_refsasa.py --lambda-mode his` on the blocked His model-peptide
+trajectories.
+
+Generate `HIP`, `HID`, and `HIE` rows separately for each force field using the
+same atom/site definition as the protein numerator.
+
+The model-peptide masks and first-frame/step interval must be verified from the
+actual His reference simulations before production use.
+
+### Step H3 — Normalize H15 frame-wise SASA
+
+Run `calc_fsasa.py --lambda-mode his` using the H15 frame/state table.
+
+For the current H15 analysis, the state-side frame provenance can be remapped
+from:
+
+```text
+analysis_frame
+raw_coord_frame
+target_md_step
+```
+
+to the canonical raw-SASA identity fields.
+
+### Step H4 — Condition the resulting fSASA downstream
+
+The fSASA tools stop at frame-wise normalization. H15-specific comparisons such
+as:
+
+```text
+fSASA(HIE, chi2+)
+fSASA(HIE, chi2-)
+fSASA(HID, chi2+)
+fSASA(HID, chi2-)
+delta fSASA = fSASA(chi2+) - fSASA(chi2-)
+```
+
+belong in the downstream H15 analysis/plotting layer, not inside
+`calc_fsasa.py`.
+
+This separation is important because `HIP`/`HID`/`HIE` normalization and
+`chi2` conditioning answer different questions.
+
+---
+
 # 6. Why the tools are separate
 
 The separation is deliberate and should be maintained.
@@ -1038,6 +1396,7 @@ Does not know about:
 
 - lambda,
 - protonation states,
+- His tautomer coordinates,
 - coupled states,
 - reference normalization.
 
@@ -1046,14 +1405,16 @@ Does not know about:
 Knows about:
 
 - model-system coordinates,
-- one local titration coordinate,
 - exact lambda-step matching,
 - chemistry-level reference identity,
-- state-specific reference statistics.
+- state-specific reference statistics,
+- legacy one-coordinate `H`/`deprot` classification,
+- His `ires`/`itauto` parsing and `HIP`/`HID`/`HIE` classification.
 
 Does not know about:
 
-- HEWL E35 or D52 identities,
+- biological identities such as HEWL E35, D52, or H15,
+- protein rotamers,
 - protein coupled-state labels,
 - protein fSASA.
 
@@ -1062,9 +1423,11 @@ Does not know about:
 Knows about:
 
 - canonical raw SASA tables,
-- authoritative local lambda columns,
+- authoritative local state coordinates,
 - chemistry/site mappings,
 - reference-table lookup,
+- exact/remapped frame joins,
+- single-coordinate and His state classification,
 - frame-wise normalization.
 
 Does not know about:
@@ -1072,18 +1435,19 @@ Does not know about:
 - coordinates,
 - CPPTRAJ,
 - how the state table itself was generated,
+- `chi2` rotamer definitions,
 - state-conditioned averaging.
 
-## `partition_by_state.py`
+## `partition_by_state.py` and project-specific analysis
 
-Knows about:
+Downstream statistics tools know about:
 
 - authoritative state assignments,
 - exact frame joins,
-- globally clean/matched filtering,
-- timeline-first block statistics.
+- timeline-first block statistics,
+- requested grouping/conditioning variables.
 
-Does not know whether an observable is:
+They do not need to know whether the normalized observable came from:
 
 - distance,
 - SASA,
@@ -1091,6 +1455,10 @@ Does not know whether an observable is:
 - hydrogen bonding,
 - hydration,
 - or another structural quantity.
+
+For specialized analyses such as H15 rotamer-conditioned fSASA, a
+project-specific plotting/analysis layer may be more appropriate than the
+generic coupled-state partitioner.
 
 This architecture allows each layer to be tested and reused independently.
 
@@ -1133,10 +1501,16 @@ The default exact join is:
 trajectory + trajectory_frame
 ```
 
-The current HEWL state table additionally contains fields including:
+but the state-side names of the canonical identity columns can be remapped with
+the `--state-*-column` options.
+
+### Dyad-style state table
+
+The validated HEWL catalytic-dyad table contains fields including:
 
 ```text
 analysis_row
+trajectory_frame
 step
 pH
 primary_label
@@ -1149,7 +1523,7 @@ clean
 matched
 ```
 
-For the current dyad analysis:
+For that analysis:
 
 ```text
 primary_label   = E35
@@ -1159,6 +1533,44 @@ coupled_lambda  = D52 local lambda
 ```
 
 Do not infer protonation from the label columns.
+
+### H15 `analyze_his.py` frame table
+
+The H15 table uses different frame-column names and contains the physical His
+state directly:
+
+```text
+trajectory
+analysis_frame
+raw_coord_frame
+target_md_step
+ph
+lambda
+x
+state
+tautomer
+chi2_deg
+...
+```
+
+For fSASA joining, the relevant remapping is:
+
+```text
+canonical                  H15 state table
+---------                  ---------------
+trajectory                 trajectory
+analysis_row                analysis_frame
+trajectory_frame            raw_coord_frame
+step                        target_md_step
+```
+
+The H15 trajectory field may include a trajectory extension while
+`calc_sasa.py` stores the trajectory stem. Use `--trajectory-key-mode stem`
+when necessary.
+
+If the H15 table has no explicit `matched` or `clean` columns,
+`calc_fsasa.py` infers these from the availability and endpoint classification
+of the local state coordinates.
 
 ## Reference table
 
@@ -1172,7 +1584,15 @@ protonation
 reference_sasa_A2
 ```
 
-The production `calc_refsasa.py` writes substantially more provenance.
+Required state rows are:
+
+```text
+single mode: H, deprot
+His mode:    HIP, HID, HIE
+```
+
+The production `calc_refsasa.py` writes substantially more provenance,
+including lambda mode and His endpoint mapping.
 
 ---
 
@@ -1187,43 +1607,72 @@ Before accepting a new fSASA analysis, check all of the following.
 - raw output ordering is deterministic;
 - finite negative partial-LCPO values are preserved;
 - `offset`, `nbrcut`, selections, solutemask, topology, and frame-step mapping
-  are recorded.
+  are recorded;
+- the protein and reference calculations use the **same chemical atom/site
+  definition**.
 
-### Reference SASA
+### Reference SASA — all modes
 
 - every coordinate frame is accounted for as matched or outside the lambda
   range;
+- every step inside the lambda range has an exact lambda record;
+- no nearest-neighbor lambda matching occurs;
+- every required reference mean is finite and > 0;
+- reference force field matches the protein force field;
+- state thresholds match those used by `calc_fsasa.py`.
+
+### Reference SASA — single mode
+
 - every matched frame is classified as `H`, `deprot`, or `mixed`;
 - `H + deprot + mixed = matched`;
-- the reference mean is finite and > 0 for both clean protonation states;
-- model/reference selection matches the chemical definition of the protein
-  numerator;
-- ASP and GLU rows are written to the intended shared reference table;
-- reference force field matches the protein force field.
+- both clean `H` and `deprot` ensembles contain frames.
 
-### fSASA
+### Reference SASA — His mode
+
+- the intended His `ires` is resolved;
+- exactly one `itauto=1` and one `itauto=2` variable are selected for that
+  `ires`;
+- `x` endpoint mapping is explicitly correct for the force field;
+- every matched frame is classified as `HIP`, `HID`, `HIE`,
+  protonation-`mixed`, or `neutral_tautomer_mixed`;
+- all three `HIP`, `HID`, and `HIE` reference ensembles contain frames;
+- neutral tautomer-mixed frames are excluded from the pure HID/HIE
+  denominators;
+- any lambda counter resets are reported and the unwrapped step series remains
+  strictly increasing.
+
+### fSASA — all modes
 
 - every raw SASA observation exact-joins to one authoritative state row;
 - no nearest-neighbor frame matching occurs;
-- locally mixed/unmatched rows remain in the canonical timeline with blank
-  fSASA;
-- locally clean rows use the correct chemistry/protonation denominator;
-- negative raw values remain negative after division by positive references;
-- globally clean coupled-state rows all have valid fSASA values.
+- shared frame/step/pH metadata agree;
+- unavailable-state rows remain in the canonical timeline with blank fSASA;
+- locally clean rows use the correct chemistry/state denominator;
+- negative raw values remain negative after division by positive references.
 
-### State partition
+### fSASA — His mode
 
-- joined row count equals the canonical fSASA row count;
-- blocks are formed from the complete original timeline before state
-  selection;
-- globally unmatched and unclean counts agree with the authoritative state
-  assignment;
-- rare one-frame states retain blank SD/SEM rather than fabricated
-  uncertainty.
+- `lambda` and `x` endpoint mappings match the reference calculation;
+- `HIP` uses the HIP denominator independent of `x`;
+- pure neutral frames use HID or HIE denominators separately;
+- neutral tautomer-mixed frames do not receive an fSASA value;
+- source `state`/`tautomer` labels agree with the lambda/x classification when
+  validation is enabled;
+- H15 frame-column remapping and trajectory stem normalization are recorded in
+  the settings file.
+
+### Downstream state/rotamer partition
+
+- blocks are formed from the intended original timeline before conditional
+  state selection;
+- sampling thresholds are applied to the actual microstate being summarized;
+- for H15, HID/HIE and `chi2+`/`chi2-` conditioning is performed downstream,
+  not by changing the reference denominator definition;
+- rare one-frame states retain blank SD/SEM rather than fabricated uncertainty.
 
 ---
 
-# 9. Current ff19SB HEWL validation summary
+# 9. Current ff19SB HEWL carboxylate validation summary
 
 The validated production chain for the catalytic E35/D52 carboxylate oxygen
 analysis is:
@@ -1315,22 +1764,21 @@ commands and generated data with the project.
 
 # 12. Quick reference
 
-Raw protein SASA:
+## Raw protein SASA
 
 ```bash
 python3 calc_sasa.py \
     -p topology.prmtop \
     -t 'arex.ph*.nc' \
-    --site E35_COO ':36@OE1,OE2' \
-    --site D52_COO ':53@OD1,OD2' \
-    --solutemask '^1' \
-    --first-frame-step 510000 \
-    --frame-step-interval 10000 \
-    --jobs 9 \
+    --site OBSERVABLE 'CPPTRAJ_SELECTION' \
+    --solutemask 'SOLUTE_MASK' \
+    --first-frame-step FIRST_STEP \
+    --frame-step-interval STEP_INTERVAL \
+    --jobs N \
     -o protein_sasa.tsv
 ```
 
-Reference denominator:
+## Single-coordinate reference denominator
 
 ```bash
 python3 calc_refsasa.py \
@@ -1348,7 +1796,35 @@ python3 calc_refsasa.py \
     -o refsasa.tsv
 ```
 
-Frame-wise fSASA:
+## Histidine reference denominator
+
+```bash
+python3 calc_refsasa.py \
+    --forcefield ff19SB \
+    --chemistry HIS \
+    --site-definition histidine_sidechain \
+    --selection 'HIS_REFERENCE_SELECTION' \
+    -p model_his.prmtop \
+    -t 'arex.ph*.nc' \
+    -l 'arex.ph*.lambda' \
+    --solutemask 'MODEL_PEPTIDE_SOLUTEMASK' \
+    --first-frame-step FIRST_STEP \
+    --frame-step-interval STEP_INTERVAL \
+    --lambda-mode his \
+    --x-low-tautomer HID \
+    --x-high-tautomer HIE \
+    --jobs N \
+    -o refsasa.tsv
+```
+
+For c22, use:
+
+```text
+--x-low-tautomer HIE
+--x-high-tautomer HID
+```
+
+## Single-coordinate frame-wise fSASA
 
 ```bash
 python3 calc_fsasa.py \
@@ -1361,7 +1837,31 @@ python3 calc_fsasa.py \
     -o protein_fsasa.tsv
 ```
 
-State-conditioned fSASA:
+## H15-style His frame-wise fSASA
+
+```bash
+python3 calc_fsasa.py \
+    --sasa H15_raw_sasa.tsv \
+    --states H15_frames.tsv.gz \
+    --references refsasa.tsv \
+    --forcefield ff19SB \
+    --site H15_SIDECHAIN HIS histidine_sidechain lambda \
+    --lambda-mode his \
+    --tautomer-column x \
+    --x-low-tautomer HID \
+    --x-high-tautomer HIE \
+    --trajectory-key-mode stem \
+    --state-analysis-row-column analysis_frame \
+    --state-trajectory-frame-column raw_coord_frame \
+    --state-step-column target_md_step \
+    -o H15_fsasa.tsv
+```
+
+The His masks, observable name, site-definition string, model-peptide masks, and
+frame-step mapping in these templates are placeholders until verified for the
+specific production system.
+
+## Generic state-conditioned fSASA
 
 ```bash
 python3 ../partition/partition_by_state.py \
@@ -1373,4 +1873,8 @@ python3 ../partition/partition_by_state.py \
     --joined-output protein_fsasa_with_states.tsv \
     -o protein_fsasa_by_state.tsv
 ```
+
+For H15 rotamer/tautomer-conditioned analysis, use the project-specific H15
+analysis layer so the same `chi2` basin definitions and sampling thresholds are
+used as in the rest of the H15 figure analysis.
 

@@ -997,10 +997,26 @@ def read_series_matrix(path: Path, nframes: int, kind: str) -> list[tuple[str, t
     for ci in range(1, ncol):
         vals: list[int] = []
         for row in numeric:
-            x = float(row[ci]); n = int(round(x))
-            if abs(x-n) > 1e-6 or n not in {0,1}:
-                raise RuntimeError(f"{path}: non-binary H-bond series value {x}")
+            x = float(row[ci])
+            n = int(round(x))
+
+            if abs(x - n) > 1e-6 or n < 0:
+                raise RuntimeError(
+                    f"{path}: non-integral/negative H-bond series value {x}"
+                )
+
+            # Solute-solute (UU) series represent a specific physical H-bond
+            # and must therefore be binary.  For non-specific solute-solvent
+            # (UV) series, CPPTRAJ collapses solvent identity to V; multiple
+            # solvent molecules can interact with the same solute endpoint in
+            # one frame, so values may be integer counts > 1.
+            if kind == "UU" and n not in {0, 1}:
+                raise RuntimeError(
+                    f"{path}: non-binary UU H-bond series value {x}"
+                )
+
             vals.append(n)
+
         out.append((header[ci].strip('"'), tuple(vals)))
     return out
 
@@ -1433,21 +1449,30 @@ def run_one_trajectory(*, topology: Path, trajectory: Path,
 
             ambiguous_present=False
             outside_present=False
-            for key,b in merged.items():
-                if b.values[fi]==0: continue
-                cstat=bond_chemistry_status(b,lam,vals,lstatus,args)
-                if cstat=="valid":
-                    counts[fi]+=1; bond_valid_counts[key]+=1
-                elif cstat=="invalid":
+            for key, b in merged.items():
+                multiplicity = b.values[fi]
+                if multiplicity == 0:
+                    continue
+
+                cstat = bond_chemistry_status(b, lam, vals, lstatus, args)
+
+                if cstat == "valid":
+                    counts[fi] += multiplicity
+                    bond_valid_counts[key] += multiplicity
+
+                elif cstat == "invalid":
                     pass
-                elif cstat=="mixed_lambda":
-                    ambiguous_present=True
-                    ambiguous_counts[fi]+=1
-                    bond_ambig_counts[key]+=1
-                elif cstat=="outside_lambda_window":
-                    outside_present=True
-                    outside_counts[fi]+=1
-                    bond_outside_counts[key]+=1
+
+                elif cstat == "mixed_lambda":
+                    ambiguous_present = True
+                    ambiguous_counts[fi] += multiplicity
+                    bond_ambig_counts[key] += multiplicity
+
+                elif cstat == "outside_lambda_window":
+                    outside_present = True
+                    outside_counts[fi] += multiplicity
+                    bond_outside_counts[key] += multiplicity
+
                 else:
                     raise AssertionError(cstat)
             if outside_present:
@@ -1471,19 +1496,35 @@ def run_one_trajectory(*, topology: Path, trajectory: Path,
             raw=raw_avg.get(key,{})
             # For UV, key may not match solvout formatting.  Keep geometry blank
             # rather than inventing an association.
-            detail_rows.append({
-                "trajectory":stem,"pH":ph,"observable":o.name,"mode":o.mode,
-                "interaction_class":o.interaction_class,"selection1":o.selection1,
-                "selection2":o.selection2,"acceptor":b.acceptor,"donor_h":b.donor_h,
-                "donor":b.donor,"count":valid,"count_semantics":"chemically_valid_frames_present",
-                "fraction":valid/nframes,"raw_count":raw_count,"raw_fraction":raw_count/nframes,
-                "ambiguous_present_frames":bond_ambig_counts[key],
-                "outside_lambda_present_frames":bond_outside_counts[key],
-                "raw_avg_distance_A":raw.get("raw_avg_distance_A",math.nan),
-                "raw_avg_angle_deg":raw.get("raw_avg_angle_deg",math.nan),
-                "geometry_average_scope":"CPPTRAJ geometric-candidate-present frames before CpH filtering",
-            })
 
+            if b.kind == "UU":
+                count_semantics = "chemically_valid_frames_present"
+            else:
+                count_semantics = "chemically_valid_interactions"
+
+            detail_rows.append({
+                "trajectory": stem,
+                "pH": ph,
+                "observable": o.name,
+                "mode": o.mode,
+                "interaction_class": o.interaction_class,
+                "selection1": o.selection1,
+                "selection2": o.selection2,
+                "acceptor": b.acceptor,
+                "donor_h": b.donor_h,
+                "donor": b.donor,
+                "count": valid,
+                "count_semantics": count_semantics,
+                "fraction": valid / nframes,
+                "raw_count": raw_count,
+                "raw_fraction": raw_count / nframes,
+                "ambiguous_present_frames": bond_ambig_counts[key],
+                "outside_lambda_present_frames": bond_outside_counts[key],
+                "raw_avg_distance_A": raw.get("raw_avg_distance_A", math.nan),
+                "raw_avg_angle_deg": raw.get("raw_avg_angle_deg", math.nan),
+                "geometry_average_scope":
+                    "CPPTRAJ geometric-candidate-present frames before CpH filtering",
+            })
     return {"trajectory":trajectory,"nframes":nframes,"trajectory_frames":trajectory_frames,
             "steps":steps,"combined_series":combined,
             "ambiguous_series":ambiguous_series,"outside_series":outside_series,
