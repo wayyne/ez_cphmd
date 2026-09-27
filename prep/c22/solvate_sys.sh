@@ -135,8 +135,8 @@ if [[ ! -f "${INNAME}.crd" ]]; then
     exit 1
 fi
 
-if [[ ! -f "${charmm_scripts}/solvate_sys.inp" ]]; then
-    echo "Error: Missing CHARMM input script: ${charmm_scripts}/solvate_sys.inp"
+if [[ ! -f "${SCRIPT_DIR}/solvate_sys.inp" ]]; then
+    echo "Error: Missing CHARMM input script: ${SCRIPT_DIR}/solvate_sys.inp"
     exit 1
 fi
 
@@ -300,6 +300,7 @@ else
 fi
 
 OUTNAME="${INNAME}_solv_${CUSHION_TAG}A_${BOX_TYPE}_${ION_TAG}"
+OUTNAME="$(printf '%s' "$OUTNAME" | tr '[:upper:]' '[:lower:]')"
 LOGFILE="solvate_${OUTNAME}.out"
 
 # =====================================================================

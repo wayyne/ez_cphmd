@@ -6,7 +6,7 @@ set -euo pipefail
 ###############################################################################
 
 # Force field: c22, ff14sb, or ff19sb
-ff="c22"
+ff="ff19sb"
 
 # Set exactly one:
 pdbid="2lzt"          # Fetch this PDB ID from RCSB
@@ -212,6 +212,7 @@ if [[ "$ff" == "c22" ]]; then
     cushion_tag="$(sanitize_num_tag "$cushion")"
     ion_tag="$(make_ion_tag)"
     system="${prepared}_solv_${cushion_tag}A_${boxtype}_${ion_tag}"
+    system="$(printf '%s' "$system" | tr '[:upper:]' '[:lower:]')"
 
     load_amber_env
     bash "${PREP_DIR}/c22/run_chamber.sh" "$C22_TOPPAR" "$system"

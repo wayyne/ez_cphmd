@@ -101,7 +101,7 @@ for (( i=0; i<$PEPLEN; i++ )); do
     fi
 done
 
-OUTNAME="${CAP_LABEL}_${SEQ_IN}"
+OUTNAME="$(printf '%s_%s' "$CAP_LABEL" "$SEQ_IN" | tr '[:upper:]' '[:lower:]')"
 
 echo "========================================="
 echo "Processing Sequence : $SEQ_IN"
@@ -117,4 +117,27 @@ if [[ -z "${C22_TOPPAR:-}" ]]; then
     exit 1
 fi
 
-charmm TOPPAR="$C22_TOPPAR" PEPLEN="$PEPLEN" PEPRSQ="$PEPRSQ" NCAP="$NCAP" CCAP="$CCAP" OUTNAME="$OUTNAME" < "$CHARMM_INPUT" > "gen_${OUTNAME}.out"
+LOGFILE="gen_${OUTNAME}.out"
+
+charmm TOPPAR="$C22_TOPPAR" PEPLEN="$PEPLEN" PEPRSQ="$PEPRSQ" NCAP="$NCAP" CCAP="$CCAP" OUTNAME="$OUTNAME" < "$CHARMM_INPUT" > "$LOGFILE" 2>&1
+CHARMM_STATUS=$?
+
+if [[ "$CHARMM_STATUS" -ne 0 ]]; then
+    echo "Error: CHARMM exited with status ${CHARMM_STATUS}." >&2
+    echo "See log: $LOGFILE" >&2
+    exit "$CHARMM_STATUS"
+fi
+
+for output_file in "${OUTNAME}.psf" "${OUTNAME}.crd" "${OUTNAME}.pdb"; do
+    if [[ ! -s "$output_file" ]]; then
+        echo "Error: expected CHARMM output was not created: $output_file" >&2
+        echo "See log: $LOGFILE" >&2
+        exit 1
+    fi
+done
+
+echo "CHARMM peptide preparation completed successfully."
+echo "PSF         : ${OUTNAME}.psf"
+echo "Coordinates : ${OUTNAME}.crd"
+echo "PDB         : ${OUTNAME}.pdb"
+echo "CHARMM log  : $LOGFILE"

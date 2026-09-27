@@ -6,7 +6,7 @@ set -euo pipefail
 ###############################################################################
 
 # Force field: c22, ff14sb, or ff19sb
-ff="c22"
+ff="ff19sb"
 
 pep="gdg"
 cushion="15"
@@ -126,6 +126,7 @@ esac
 [[ "$titr" == "-1" || "$titr" == "0" || "$titr" == "1" ]] || die "titr must be -1, 0, or 1"
 
 seq_up="$(printf "%s" "$pep" | tr '[:lower:]' '[:upper:]')"
+seq_low="$(printf "%s" "$pep" | tr '[:upper:]' '[:lower:]')"
 
 if [[ "$ff" == "c22" ]]; then
     [[ -n "${C22_TOPPAR:-}" ]] || die "C22_TOPPAR is not set in config.sh"
@@ -140,10 +141,10 @@ if [[ "$ff" == "c22" ]]; then
 
     if [[ "$capped" == "1" ]]; then
         bash "${SCRIPT_DIR}/c22/genpep.sh" --pep "$pep" --capped
-        prepared="capped_${seq_up}"
+        prepared="capped_${seq_low}"
     else
         bash "${SCRIPT_DIR}/c22/genpep.sh" --pep "$pep" --uncapped
-        prepared="zwitter_${seq_up}"
+        prepared="zwitter_${seq_low}"
     fi
 
     solvate_args=(
@@ -164,6 +165,7 @@ if [[ "$ff" == "c22" ]]; then
     cushion_tag="$(sanitize_num_tag "$cushion")"
     ion_tag="$(make_ion_tag)"
     system="${prepared}_solv_${cushion_tag}A_${boxtype}_${ion_tag}"
+    system="$(printf '%s' "$system" | tr '[:upper:]' '[:lower:]')"
 
     load_amber_env
     bash "${PREP_DIR}/c22/run_chamber.sh" "$C22_TOPPAR" "$system"
