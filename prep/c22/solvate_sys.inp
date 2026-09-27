@@ -1,0 +1,633 @@
+* Comprehensive Engine: Standalone Solvation, Box Shaping, and Ion Placement
+* Updated for canonical BOXID unit-cell handling and exact ion placement
+*
+
+DIMENS CHSIZE 2000000
+
+! =====================================================================
+! 1. Define Paths and Read Force Field Topology Libraries
+! =====================================================================
+! TOPPAR is supplied by the Bash wrapper from prep/config.sh
+set top    = @TOPPAR/prot/top_all22_prot.rtf
+set par    = @TOPPAR/prot/par_all22_prot.prm
+set watstr = @TOPPAR/toppar_water_ions.str
+set phstr  = @TOPPAR/toppar_phmd_c22_foramber.str
+set segid  = PROA
+
+open unit 1 read form name @top
+read rtf card unit 1
+close unit 1
+
+open unit 1 read form name @par
+read param card unit 1 flex
+close unit 1
+
+stream @phstr
+stream @watstr
+
+set cubox = @TOPPAR/tip216.crd
+
+! =====================================================================
+! 2. Read Input Structure Dynamically Based on Terminal Arguments
+! =====================================================================
+open read unit 10 card name @INNAME.psf
+read psf unit 10 card
+close unit 10
+
+open read unit 10 card name @INNAME.crd
+read coor unit 10 card
+close unit 10
+
+! Record the input PSF charge for diagnostics only.
+! Neutralizing-ion counts are determined later from standard
+! dominant protonation states at pH 7.5.
+coor dipole sele all end
+set psfchg = ?charge
+
+echo ============================================================
+echo Input solute charge from PSF, diagnostic only: @psfchg
+echo Neutralization model: dominant protonation states at pH 7.5
+echo ============================================================
+
+! =====================================================================
+! 3. Orient and Measure Solute Dimensions
+! =====================================================================
+coor orient
+coor stat sele all end
+
+calc Xinit = int ( ( ?Xmax - ?Xmin ) + 2 * @CUSHION ) + 1
+calc Yinit = int ( ( ?Ymax - ?Ymin ) + 2 * @CUSHION ) + 1
+calc Zinit = int ( ( ?Zmax - ?Zmin ) + 2 * @CUSHION ) + 1
+
+calc Lbox = @Xinit
+if @Yinit .gt. @Lbox calc Lbox = @Yinit
+if @Zinit .gt. @Lbox calc Lbox = @Zinit
+
+calc A = @Lbox
+calc B = @Lbox
+calc C = @Lbox
+
+! =====================================================================
+! 3b. Canonical Unit Cell Geometry
+! =====================================================================
+! BOXID:
+!   1 = cubic
+!   2 = truncated octahedral
+!   3 = rhombic dodecahedron
+
+if @BOXID .eq. 1 then
+   set cellnam CUBIC
+   calc alpha = 90.0
+   calc beta  = 90.0
+   calc gamma = 90.0
+endif
+
+if @BOXID .eq. 2 then
+   set cellnam OCTAHEDRAL
+   calc targetA = @Lbox * 2.0 / sqrt(3.0)
+   calc A = int(@targetA) + 1
+   calc B = @A
+   calc C = @A
+   calc alpha = 109.471220634
+   calc beta  = 109.471220634
+   calc gamma = 109.471220634
+endif
+
+if @BOXID .eq. 3 then
+   set cellnam RHDO
+   calc targetA = @Lbox * sqrt(2.0)
+   calc A = int(@targetA) + 1
+   calc B = @A
+   calc C = @A
+   calc alpha = 60.0
+   calc beta  = 90.0
+   calc gamma = 60.0
+endif
+
+echo ============================================================
+echo Requested BOXID: @BOXID
+echo CHARMM cell: @cellnam
+echo Cell dimensions: @A @B @C
+echo Cell angles: @alpha @beta @gamma
+echo ============================================================
+
+! =====================================================================
+! 3c. Volume Calculations
+! =====================================================================
+calc dcel = 0.5
+calc xdim = int ( ( ?xmax - ?xmin + 5.0 ) / @dcel ) + 1
+calc ydim = int ( ( ?ymax - ?ymin + 5.0 ) / @dcel ) + 1
+calc zdim = int ( ( ?zmax - ?zmin + 5.0 ) / @dcel ) + 1
+calc space = @xdim * @ydim * @zdim
+
+scalar wmain = radius
+scalar wmain add 1.4
+scalar 1 = wmain
+scalar 2 set 6.0
+coor volume hole space @space sele all end
+set molvol = ?volume
+
+if @BOXID .eq. 1 calc sysvol = @A * @B * @C
+if @BOXID .eq. 2 calc sysvol = 4.0 * sqrt( 3.0 ) / 9.0 * @A * @A * @A
+if @BOXID .eq. 3 calc sysvol = sqrt( 0.5 ) * @A * @A * @A
+
+calc ionvol = @sysvol - @molvol
+
+echo ============================================================
+echo Molecular volume: @molvol
+echo System volume: @sysvol
+echo Ion-accessible volume estimate: @ionvol
+echo ============================================================
+
+! =====================================================================
+! 4. Residue Counting and Formal pH 7.5 Charge
+! =====================================================================
+! Standard dominant protonation-state model:
+!
+!   ASP = -1
+!   GLU = -1
+!   LYS = +1
+!   ARG = +1
+!   HIS/HSD/HSE/HSP = 0
+!   CYS = 0
+!   TYR = 0
+!
+! Terminal charges:
+!
+!   ACE-capped N-terminus = 0
+!   Uncapped N-terminus   = +1
+!   CT2/CT3 C-terminus    = 0
+!   Uncapped C-terminus   = -1
+!
+! This formal charge is used only to determine neutralizing-ion counts.
+! It does not modify the atomic charges stored in the PSF.
+
+define target sele segid @segid end
+set res1 = ?selresi
+calc reslast = ?selresi + ?nres - 1
+
+set ires = @res1
+set nacid = 0
+set nbase = 0
+set nhsp = 0
+set hasncap = 0
+set hasccap = 0
+
+label ntitr
+define cres sele segid @segid .and. resid @ires end
+
+! Detect neutral terminal caps.
+if ?selresn .eq. ACE set hasncap = 1
+if ?selresn .eq. ACE goto skipres
+
+if ?selresn .eq. CT2 set hasccap = 1
+if ?selresn .eq. CT2 goto skipres
+
+if ?selresn .eq. CT3 set hasccap = 1
+if ?selresn .eq. CT3 goto skipres
+
+! Residues carrying formal charge at pH 7.5.
+if ?selresn .eq. ASP incr nacid
+if ?selresn .eq. GLU incr nacid
+if ?selresn .eq. LYS incr nbase
+if ?selresn .eq. ARG incr nbase
+
+! Retain this count for the existing pHMD co-ion calculation.
+if ?selresn .eq. HSP incr nhsp
+
+label skipres
+if @ires .lt. @reslast then
+   incr ires
+   goto ntitr
+endif
+
+! Determine the terminal contribution.
+calc termchg = 0
+
+! No ACE residue means the standard NTER contribution is +1.
+if @hasncap .eq. 0 calc termchg = @termchg + 1
+
+! No CT2/CT3 residue means the standard CTER contribution is -1.
+if @hasccap .eq. 0 calc termchg = @termchg - 1
+
+! Formal dominant-state protein charge at pH 7.5.
+calc netchg = @nbase - @nacid + @termchg
+
+echo ============================================================
+echo Dominant-state charge model at pH 7.5
+echo ASP plus GLU count: @nacid
+echo LYS plus ARG count: @nbase
+echo HSP count, treated as neutral for charge: @nhsp
+echo ACE N-terminal cap present: @hasncap
+echo CT2/CT3 C-terminal cap present: @hasccap
+echo Terminal charge contribution: @termchg
+echo Formal pH 7.5 charge used for neutralization: @netchg
+echo ============================================================
+
+! =====================================================================
+! 4a. pHMD Co-ion Requests
+! =====================================================================
+! Preserved from the existing workflow.
+! If the PHMD stream expects TIPU/TIPP instead of SOD/CLA,
+! change these residue names separately.
+
+set poscoion = SOD
+set negcoion = CLA
+
+if @TITRFLAG .lt. 0 then
+   calc nposcoion = @nhsp
+   calc nnegcoion = @nacid
+endif
+
+if @TITRFLAG .gt. 0 then
+   calc nposcoion = @nbase + @nhsp
+   calc nnegcoion = 0
+endif
+
+if @TITRFLAG .eq. 0 then
+   calc nposcoion = 0
+   calc nnegcoion = 0
+endif
+
+! =====================================================================
+! 4b. Ion Count Calculation
+! =====================================================================
+! IONMODE:
+!   AUTO  = compute bulk SOD/CLA from concentration and the formal
+!           dominant-state charge at pH 7.5.
+!   EXACT = use exactly NSOD/NCLA from the wrapper; no concentration
+!           or neutralization correction is applied.
+!
+! pHMD co-ion counts remain separate. For standard non-pHMD runs,
+! use TITRFLAG=0.
+
+calc nsalt = 0
+calc coichg = @nposcoion - @nnegcoion
+calc fixchg = @netchg + @coichg
+calc npos = 0
+calc nneg = 0
+
+if @IONMODE .eq. EXACT then
+   calc npos = @NSOD
+   calc nneg = @NCLA
+endif
+
+if @IONMODE .eq. AUTO then
+   calc nsalt = int ( @CONC * 6.022 * 0.0001 * @ionvol + 0.5 )
+
+   calc npos = @nsalt
+   calc nneg = @nsalt
+
+   if @fixchg .lt. 0 calc npos = @npos - @fixchg
+   if @fixchg .gt. 0 calc nneg = @nneg + @fixchg
+
+   if @npos .lt. 0 set npos = 0
+   if @nneg .lt. 0 set nneg = 0
+endif
+
+calc niontot = @nposcoion + @nnegcoion + @npos + @nneg
+
+echo ============================================================
+echo Ion mode: @IONMODE
+echo pHMD positive co-ions: @nposcoion
+echo pHMD negative co-ions: @nnegcoion
+echo Salt pairs from concentration: @nsalt
+echo Formal pH 7.5 charge before bulk ions: @netchg
+echo Fixed charge including pHMD co-ions: @fixchg
+echo Bulk SOD count: @npos
+echo Bulk CLA count: @nneg
+echo Total waters to convert to ions: @niontot
+echo ============================================================
+
+! Save protein temporarily, clear memory to generate water lattice
+open write unit 20 card name prot_temp.crd
+write coor unit 20 card
+* Temporary oriented solute coordinates
+*
+close unit 20
+
+open write unit 20 card name prot_temp.psf
+write psf unit 20 card
+* Temporary oriented solute PSF
+*
+close unit 20
+
+delete atom sele all end
+
+! =====================================================================
+! 5. Build Full Water Grid Lattice
+! =====================================================================
+calc BoxSizeX = @A * 1.1
+set L 18.8560
+calc Xnum = int(@BoxSizeX/@L) + 1
+calc Ynum = @Xnum
+calc Znum = @Xnum
+
+read sequence TIP3 216
+generate W000 setup noangle nodihedral
+
+open read unit 10 card name @cubox
+read coor unit 10 card
+close unit 10
+
+calc Lhalf = @L / 2.0
+coor trans xdir 1.0 dist @Lhalf ydir 1.0 dist @Lhalf zdir 1.0 dist @Lhalf
+
+set J2 1
+label DO2
+   set J1 1
+   label DO1
+      calc wsegid = ( @J2 - 1 ) * @Xnum + @J1
+      read sequence TIP3 216
+      generate W@wsegid setup noangle nodihedral
+      coor duplicate select segid W000 end select segid W@wsegid end
+      calc X = @L * ( @J1 - 1 )
+      calc Y = @L * ( @J2 - 1 )
+      coor trans xdir @X ydir @Y select segid W@wsegid end
+      incr J1 by 1
+      if @J1 .le. @Xnum goto DO1
+   incr J2 by 1
+   if @J2 .le. @Ynum goto DO2
+
+define trimxy sele .byres. ( ( type OH2 ) .and. -
+                             ( prop X .gt. @BoxSizeX .or. -
+                               prop Y .gt. @BoxSizeX ) ) end
+
+if ?nsel .gt. 0 then
+   delete atom sele .byres. ( ( type OH2 ) .and. -
+                              ( prop X .gt. @BoxSizeX .or. -
+                                prop Y .gt. @BoxSizeX ) ) end
+endif
+delete atom sele segid W000 end
+
+open write unit 10 card name water_tmp.crd
+write coor unit 10 card
+* Temporary XY water slab
+*
+close unit 10
+
+delete atom sele all end
+
+set J3 1
+label DO3
+   open read card unit 10 name water_tmp.crd
+   read sequence coor card unit 10
+   close unit 10
+
+   generate Wz@J3 setup warn noangle nodihedral
+
+   open read unit 10 card name water_tmp.crd
+   read coor unit 10 card append
+   close unit 10
+
+   calc Z = @L * ( @J3 - 1 )
+   coor trans zdir @Z select segid Wz@J3 end
+
+   incr J3 by 1
+   if @J3 .le. @Znum goto DO3
+
+define trimz sele .byres. ( ( type OH2 ) .and. -
+                            ( prop Z .gt. @BoxSizeX ) ) end
+
+if ?nsel .gt. 0 then
+   delete atom sele .byres. ( ( type OH2 ) .and. -
+                              ( prop Z .gt. @BoxSizeX ) ) end
+endif
+coor orient norotation
+
+! =====================================================================
+! 5b. Shape Water Block to Crystal Boundaries
+! =====================================================================
+coor orient norotation
+coor copy comp
+
+if @BOXID .eq. 1 then
+   CRYSTAL DEFINE CUBIC @A @B @C 90.0 90.0 90.0
+endif
+
+if @BOXID .eq. 2 then
+   CRYSTAL DEFINE OCTAHEDRAL @A @B @C 109.4712206344907 109.4712206344907 109.4712206344907
+endif
+
+if @BOXID .eq. 3 then
+   CRYSTAL DEFINE RHDO @A @B @C 60.0 90.0 60.0
+endif
+
+crystal build noper 0 cutoff 2.0
+
+open write card unit 1 name crystal_image.str
+crystal write card unit 1
+close unit 1
+
+IMAGE BYRESID XCEN 0.0 YCEN 0.0 ZCEN 0.0
+nbond ctonnb 10.0 ctofnb 12.0 cutnb 16.0 cutim 16.0 wmin 1.0
+
+CRYSTAL FREE
+
+coor diff comp
+
+delete atom sele .byres. ( ( prop Xcomp .ne. 0 ) .or. -
+                           ( prop Ycomp .ne. 0 ) .or. -
+                           ( prop Zcomp .ne. 0 ) ) end
+
+! =====================================================================
+! 5c. Consolidate All Generated Z Water Layers into One SOLV Segment
+! =====================================================================
+! Previous script only joined WZ1/WZ2 and left WZ3 behind.
+! This joins every generated WZ layer through Znum.
+
+set J4 2
+label JOINWZ
+if @J4 .le. @Znum then
+   join WZ1 WZ@J4 renumber
+   incr J4 by 1
+   goto JOINWZ
+endif
+
+rename segid SOLV sele segid WZ1 end
+
+define watcheck sele segid SOLV .and. type OH2 end
+set nwatshape = ?nsel
+
+echo ============================================================
+echo Waters after crystal shaping: @nwatshape
+echo ============================================================
+
+! =====================================================================
+! 6. Merge Solute Protein Back with the Water Box
+! =====================================================================
+open read unit 20 card name prot_temp.psf
+read psf unit 20 card append
+close unit 20
+
+open read unit 20 card name prot_temp.crd
+read coor unit 20 card append
+close unit 20
+
+delete atom sele .byres. ( segid SOLV .and. type OH2 .and. -
+                           ( segid @segid .around. 2.8 ) ) end
+
+define watpost sele segid SOLV .and. type OH2 end
+set nwatpost = ?nsel
+
+if @niontot .gt. @nwatpost then
+   echo ERROR: Requested ion count exceeds available solvent waters.
+   echo Requested ions: @niontot
+   echo Available waters: @nwatpost
+   stop
+endif
+
+echo ============================================================
+echo Waters after solute overlap deletion: @nwatpost
+echo Waters reserved for ion conversion: @niontot
+echo ============================================================
+
+! =====================================================================
+! 7. Generate Ions and Place Them by Exact Water-Site Conversion
+! =====================================================================
+! This replaces the broken "replace solvent" behavior.
+! For each ion atom:
+!   1. choose one SOLV OH2 water oxygen,
+!   2. duplicate that coordinate to one ion,
+!   3. delete the full selected TIP3 water residue.
+!
+! Final ion counts should exactly match:
+!   SOD total = npos + nposcoion
+!   CLA total = nneg + nnegcoion
+
+random uniform iseed 8675309
+
+! ---------------------------------------------------------------------
+! 7a. Positive pHMD co-ions
+! ---------------------------------------------------------------------
+if @nposcoion .gt. 0 then
+   read sequence @poscoion @nposcoion
+   generate COIP first none last none warn setup noangle nodihedral
+
+   set IONI 1
+   label PLCOP
+      define wato sele segid SOLV .and. type OH2 end
+      set NWAT = ?nsel
+      calc IPICK = int( ?RAND * @NWAT ) + 1
+      if @IPICK .gt. @NWAT set IPICK = @NWAT
+
+      coor duplicate -
+         select ( segid SOLV .and. type OH2 ) .subset. @IPICK end -
+         select segid COIP .and. resid @IONI end
+
+      delete atom sele .byres. ( ( segid SOLV .and. type OH2 ) .subset. @IPICK ) end
+
+      incr IONI by 1
+      if @IONI .le. @nposcoion goto PLCOP
+endif
+
+! ---------------------------------------------------------------------
+! 7b. Negative pHMD co-ions
+! ---------------------------------------------------------------------
+if @nnegcoion .gt. 0 then
+   read sequence @negcoion @nnegcoion
+   generate COIM first none last none warn setup noangle nodihedral
+
+   set IONI 1
+   label PLCOM
+      define wato sele segid SOLV .and. type OH2 end
+      set NWAT = ?nsel
+      calc IPICK = int( ?RAND * @NWAT ) + 1
+      if @IPICK .gt. @NWAT set IPICK = @NWAT
+
+      coor duplicate -
+         select ( segid SOLV .and. type OH2 ) .subset. @IPICK end -
+         select segid COIM .and. resid @IONI end
+
+      delete atom sele .byres. ( ( segid SOLV .and. type OH2 ) .subset. @IPICK ) end
+
+      incr IONI by 1
+      if @IONI .le. @nnegcoion goto PLCOM
+endif
+
+! ---------------------------------------------------------------------
+! 7c. Bulk SOD ions
+! ---------------------------------------------------------------------
+if @npos .gt. 0 then
+   read sequence SOD @npos
+   generate SOD2 first none last none warn setup noangle nodihedral
+
+   set IONI 1
+   label PLSOD
+      define wato sele segid SOLV .and. type OH2 end
+      set NWAT = ?nsel
+      calc IPICK = int( ?RAND * @NWAT ) + 1
+      if @IPICK .gt. @NWAT set IPICK = @NWAT
+
+      coor duplicate -
+         select ( segid SOLV .and. type OH2 ) .subset. @IPICK end -
+         select segid SOD2 .and. resid @IONI end
+
+      delete atom sele .byres. ( ( segid SOLV .and. type OH2 ) .subset. @IPICK ) end
+
+      incr IONI by 1
+      if @IONI .le. @npos goto PLSOD
+endif
+
+! ---------------------------------------------------------------------
+! 7d. Bulk CLA ions
+! ---------------------------------------------------------------------
+if @nneg .gt. 0 then
+   read sequence CLA @nneg
+   generate CLA2 first none last none warn setup noangle nodihedral
+
+   set IONI 1
+   label PLCLA
+      define wato sele segid SOLV .and. type OH2 end
+      set NWAT = ?nsel
+      calc IPICK = int( ?RAND * @NWAT ) + 1
+      if @IPICK .gt. @NWAT set IPICK = @NWAT
+
+      coor duplicate -
+         select ( segid SOLV .and. type OH2 ) .subset. @IPICK end -
+         select segid CLA2 .and. resid @IONI end
+
+      delete atom sele .byres. ( ( segid SOLV .and. type OH2 ) .subset. @IPICK ) end
+
+      incr IONI by 1
+      if @IONI .le. @nneg goto PLCLA
+endif
+
+define watfinal sele segid SOLV .and. type OH2 end
+set nwatfinal = ?nsel
+
+coor dipole sele all end
+set finalq = ?charge
+
+echo ============================================================
+echo Final water count: @nwatfinal
+echo Final total charge: @finalq
+echo Expected bulk SOD count: @npos
+echo Expected bulk CLA count: @nneg
+echo Expected pHMD positive co-ion count: @nposcoion
+echo Expected pHMD negative co-ion count: @nnegcoion
+echo ============================================================
+
+! =====================================================================
+! 8. Final System Save Out
+! =====================================================================
+open write unit 10 card name @{OUTNAME}.psf
+write psf card unit 10
+* Solvated and neutralized system structure file PSF
+* Sequence: @{OUTNAME}
+*
+close unit 10
+
+open write unit 10 card name @{OUTNAME}.crd
+write coor card unit 10
+* Solvated and neutralized system coordinate file CRD
+*
+close unit 10
+
+open write unit 10 card name @{OUTNAME}.pdb
+write coor pdb unit 10
+* Solvated and neutralized system PDB file
+*
+close unit 10
+
+stop

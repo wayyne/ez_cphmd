@@ -1,0 +1,352 @@
+* Generate a CpHMD-ready single-chain protein system from a cleaned PDB
+*
+
+DIMENS CHSIZE 2000000
+
+! =====================================================================
+! 1. PATHS AND FORCE FIELD FILES
+! =====================================================================
+
+! TOPPAR is supplied by the Bash wrapper from prep/config.sh
+
+set top    = @TOPPAR/prot/top_all22_prot.rtf
+set par    = @TOPPAR/prot/par_all22_prot.prm
+set watstr = @TOPPAR/toppar_water_ions.str
+set phstr  = @TOPPAR/toppar_phmd_c22_foramber.str
+
+set SEGID = PROA
+
+open unit 1 read form name @top
+read rtf card unit 1
+close unit 1
+
+open unit 1 read form name @par
+read param card unit 1 flex
+close unit 1
+
+stream @phstr
+stream @watstr
+
+! =====================================================================
+! 2. READ THE SEQUENCE GENERATED FROM THE CLEANED PDB
+! =====================================================================
+
+stream @SEQFILE
+
+echo ============================================================
+echo Generating protein segment: @SEGID
+echo Number of residues: @NRES
+echo N-terminal patch: @NCAP
+echo C-terminal patch: @CCAP
+echo ============================================================
+
+generate @SEGID first @NCAP last @CCAP setup
+
+! =====================================================================
+! 3. APPLY EXPLICIT DISULFIDE PATCHES
+! =====================================================================
+
+stream @DISUFILE
+
+! =====================================================================
+! 4. APPLY CpHMD ASP AND GLU PATCHES
+! =====================================================================
+
+set ires = 1
+
+prnlev -1
+
+label PATCH_CPHMD
+
+define residue sele segid @SEGID .and. resid @ires show end
+
+if ?selresn eq ASP patch ASPP2 @SEGID @ires
+if ?selresn eq GLU patch GLUP2 @SEGID @ires
+
+incr ires
+
+if @ires le @NRES goto PATCH_CPHMD
+
+prnlev 5
+
+! DISU, ASPP2, and GLUP2 alter the molecular connectivity.
+autogen angles dihedrals
+
+! =====================================================================
+! 5. READ EXPERIMENTAL HEAVY-ATOM COORDINATES
+! =====================================================================
+
+! Missing coordinates are expected for:
+!   - hydrogens removed by prep_pdb.sh
+!   - terminal-cap atoms
+!   - incomplete side-chain atoms that CHARMM can construct
+!   - ASPP2 and GLUP2 dummy hydrogens
+
+bomlev -2
+
+open unit 10 read form name @INPDB
+read coor pdb unit 10 resid
+close unit 10
+
+bomlev 0
+
+! Mark heavy atoms whose coordinates came directly from the input PDB.
+! WMAIN=1 is retained through coordinate construction and used for restraints.
+
+scalar wmain set 0.0
+scalar wmain set 1.0 sele .not. type H* .and. init end
+
+define resolvedheavy sele prop wmain .gt. 0.5 end
+set nresolved = ?nsel
+
+if @nresolved le 0 then
+   echo ============================================================
+   echo ERROR: No resolved heavy-atom coordinates were assigned.
+   echo Input PDB: @INPDB
+   echo ============================================================
+   stop
+endif
+
+echo ============================================================
+echo Resolved heavy atoms assigned from PDB: @nresolved
+echo ============================================================
+
+! =====================================================================
+! 6. GENERATE INTERNAL COORDINATES
+! =====================================================================
+
+ic generate
+ic parameter
+
+! ---------------------------------------------------------------------
+! HSP FIX
+!
+! IC GENERATE creates incorrect CE1-containing paths for HSP.
+! Remove those entries and restore the topology-defined HSP geometry.
+! ---------------------------------------------------------------------
+
+set ires = 1
+
+prnlev -1
+
+label PATCH_HSP_IC
+
+define residue sele segid @SEGID .and. resid @ires show end
+
+if ?selresn eq HSP then
+
+   ic delete sele segid @SEGID .and. resid @ires .and. type CE1 end
+
+   IC EDIT
+
+      ! CE1 heavy-atom placement
+      DIHE  @SEGID @ires CB   @SEGID @ires CG   @SEGID @ires ND1  @SEGID @ires CE1  -167.6200
+      DIST  @SEGID @ires CB   @SEGID @ires CG     1.5168
+      ANGLE @SEGID @ires CB   @SEGID @ires CG   @SEGID @ires ND1   122.9400
+      ANGLE @SEGID @ires CG   @SEGID @ires ND1  @SEGID @ires CE1   108.9000
+      DIST  @SEGID @ires ND1  @SEGID @ires CE1    1.3262
+
+      ! HE1 improper
+      DIHE  @SEGID @ires NE2  @SEGID @ires ND1  @SEGID @ires *CE1 @SEGID @ires HE1   178.3900
+      DIST  @SEGID @ires NE2  @SEGID @ires CE1    1.3256
+      ANGLE @SEGID @ires NE2  @SEGID @ires CE1  @SEGID @ires ND1   108.5000
+      ANGLE @SEGID @ires ND1  @SEGID @ires CE1  @SEGID @ires HE1   125.7600
+      DIST  @SEGID @ires CE1  @SEGID @ires HE1    1.0799
+
+      ! HE2 improper
+      DIHE  @SEGID @ires CE1  @SEGID @ires CD2  @SEGID @ires *NE2 @SEGID @ires HE2  -172.9400
+      DIST  @SEGID @ires CE1  @SEGID @ires NE2    1.3256
+      ANGLE @SEGID @ires CE1  @SEGID @ires NE2  @SEGID @ires CD2   108.8200
+      ANGLE @SEGID @ires CD2  @SEGID @ires NE2  @SEGID @ires HE2   125.5200
+      DIST  @SEGID @ires NE2  @SEGID @ires HE2    1.0020
+
+      ! HD1 improper
+      DIHE  @SEGID @ires CE1  @SEGID @ires CG   @SEGID @ires *ND1 @SEGID @ires HD1   171.4900
+      DIST  @SEGID @ires CE1  @SEGID @ires ND1    1.3262
+      ANGLE @SEGID @ires CE1  @SEGID @ires ND1  @SEGID @ires CG    108.9000
+      ANGLE @SEGID @ires CG   @SEGID @ires ND1  @SEGID @ires HD1   126.0900
+      DIST  @SEGID @ires ND1  @SEGID @ires HD1    1.0018
+
+   END
+
+endif
+
+incr ires
+
+if @ires le @NRES goto PATCH_HSP_IC
+
+prnlev 5
+
+! Fill internal-coordinate values using resolved PDB coordinates.
+ic fill preserve
+
+! Build missing heavy atoms and atoms introduced by patches.
+ic build
+
+! Build standard hydrogens.
+hbuild sele hydrogen end
+
+! =====================================================================
+! 7. CORRECT ASPP2 AND GLUP2 DUMMY-HYDROGEN DIHEDRALS
+! =====================================================================
+
+ic generate
+ic fill
+
+set ires = 1
+
+prnlev -1
+
+label EDIT_CPHMD_IC
+
+define residue sele segid @SEGID .and. resid @ires show end
+
+if ?selresn eq ASP then
+
+   IC EDIT
+
+      DIHE @SEGID @ires CB @SEGID @ires CG -
+           @SEGID @ires OD1 @SEGID @ires HD1 180.0
+
+      DIHE @SEGID @ires CB @SEGID @ires CG -
+           @SEGID @ires OD2 @SEGID @ires HD2 180.0
+
+   END
+
+endif
+
+if ?selresn eq GLU then
+
+   IC EDIT
+
+      DIHE @SEGID @ires CG @SEGID @ires CD -
+           @SEGID @ires OE1 @SEGID @ires HE1 180.0
+
+   END
+
+endif
+
+incr ires
+
+if @ires le @NRES goto EDIT_CPHMD_IC
+
+prnlev 5
+
+! Reinitialize only the CpHMD dummy hydrogens so the corrected IC entries
+! determine their coordinates.
+
+define aspdummy sele segid @SEGID .and. resn ASP .and. type HD* end
+
+if ?nsel gt 0 then
+   coor init sele segid @SEGID .and. resn ASP .and. type HD* end
+endif
+
+define gludummy sele segid @SEGID .and. resn GLU .and. type HE* end
+
+if ?nsel gt 0 then
+   coor init sele segid @SEGID .and. resn GLU .and. type HE* end
+endif
+
+ic build
+
+! Build any hydrogen that remains undefined.
+hbuild sele hydrogen .and. .not. init end
+
+! =====================================================================
+! 8. VERIFY THAT ALL ATOMS HAVE COORDINATES
+! =====================================================================
+
+define missingatoms sele .not. init end
+set nmissing = ?nsel
+
+if @nmissing gt 0 then
+
+   echo ============================================================
+   echo ERROR: Undefined coordinates remain after coordinate building.
+   echo Number of undefined atoms: @nmissing
+   echo ============================================================
+
+   coor print sele .not. init end
+
+   stop
+
+endif
+
+echo ============================================================
+echo All PSF atoms have initialized coordinates.
+echo ============================================================
+
+! =====================================================================
+! 9. RESTRAINED INITIAL MINIMIZATION
+! =====================================================================
+
+! Preserve the experimental heavy-atom geometry while relaxing:
+!   - hydrogens
+!   - terminal-cap atoms
+!   - rebuilt side-chain atoms
+!   - atoms introduced by CpHMD patches
+
+cons harm clear
+cons harm force 50.0 sele prop wmain .gt. 0.5 end
+
+mini sd   nstep 10 nprint 10 step 0.005
+mini abnr nstep 10 nprint 10 step 0.005
+
+cons harm clear
+
+! =====================================================================
+! 10. FINAL VALIDATION AND SYSTEM SUMMARY
+! =====================================================================
+
+define missingfinal sele .not. init end
+set nmissingfinal = ?nsel
+
+if @nmissingfinal gt 0 then
+
+   echo ============================================================
+   echo ERROR: Undefined coordinates remain after minimization.
+   echo Number of undefined atoms: @nmissingfinal
+   echo ============================================================
+
+   coor print sele .not. init end
+
+   stop
+
+endif
+
+coor dipole sele all end
+set finalq = ?charge
+
+define proteinatoms sele segid @SEGID end
+set natoms = ?nsel
+
+echo ============================================================
+echo Final prepared protein summary
+echo Segment ID       : @SEGID
+echo Residues         : @NRES
+echo Atoms            : @natoms
+echo Total charge     : @finalq
+echo Resolved restraints used: @nresolved
+echo ============================================================
+
+! =====================================================================
+! 11. WRITE PREPARED SYSTEM FILES
+! =====================================================================
+
+open unit 20 write card name @{OUTNAME}.psf
+write psf card unit 20
+* Prepared single-chain CpHMD protein PSF
+*
+close unit 20
+
+open unit 20 write card name @{OUTNAME}.crd
+write coor card unit 20
+* Prepared single-chain CpHMD protein coordinates
+*
+close unit 20
+
+open unit 20 write form name @{OUTNAME}.pdb
+write coor pdb unit 20
+close unit 20
+
+stop

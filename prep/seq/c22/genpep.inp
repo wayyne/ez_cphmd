@@ -1,0 +1,205 @@
+* Generate structure for custom peptide directly via arguments
+*
+
+set segid PROA
+
+! read in modified top and par files
+! TOPPAR is supplied by the Bash wrapper from prep/config.sh
+set top = @TOPPAR/prot/top_all22_prot.rtf
+set par = @TOPPAR/prot/par_all22_prot.prm
+set watstr = @TOPPAR/toppar_water_ions.str
+set phstr = @TOPPAR/toppar_phmd_c22_foramber.str
+
+open unit 1 read form name @top
+read rtf card unit 1
+close unit 1
+
+open unit 1 read form name @par
+read param card unit 1 flex
+close unit 1
+
+stream @phstr
+stream @watstr
+
+! === DYNAMIC SEQUENCE DEFINITION ===
+read sequence card
+* Input sequence for custom peptide
+*
+@PEPLEN
+@PEPRSQ
+
+! Generate psf with your dynamic choice of caps
+generate @segid first @NCAP last @CCAP setup
+
+! === BUILD INITIAL 3D COORDINATES FROM INTERNAL COORDINATES ===
+ic generate
+ic parameter
+
+! ------------------------------------------------------------------
+! HSP FIX:
+! IC GENErate creates bad HSP CE1/HE1 ring paths.
+! Delete generated CE1-containing ICs, then recreate CE1/HSP ring
+! hydrogen ICs using the RESI HSP topology geometry.
+! ------------------------------------------------------------------
+define ANY sele bynu 1 end
+set res1 = ?selresi
+calc reslast = ?selresi + ?nres -1
+
+set ires @res1
+
+prnlev -1
+
+label patch_hsp_ic
+ define residue sele segid @segid .and. resid @ires show end
+
+ if ?selresn eq hsp then
+
+    ! Remove generated IC entries containing CE1.
+    ! This removes the bad generated CG-CD2-NE2-CE1 and ND1-NE2-*CE1-HE1 paths.
+    ic delete sele segid @segid .and. resid @ires .and. type CE1 end
+
+    IC EDIT
+
+       ! Correct CE1 heavy atom placement:
+       ! IC CB CG ND1 CE1   1.5168 122.9400 -167.6200 108.9000 1.3262
+       DIHE  @segid @ires CB   @segid @ires CG   @segid @ires ND1  @segid @ires CE1  -167.6200
+       DIST  @segid @ires CB   @segid @ires CG     1.5168
+       ANGLE @segid @ires CB   @segid @ires CG   @segid @ires ND1   122.9400
+       ANGLE @segid @ires CG   @segid @ires ND1  @segid @ires CE1   108.9000
+       DIST  @segid @ires ND1  @segid @ires CE1    1.3262
+
+       ! Correct HE1 improper:
+       ! IC NE2 ND1 *CE1 HE1   1.3256 108.5000 178.3900 125.7600 1.0799
+       DIHE  @segid @ires NE2  @segid @ires ND1  @segid @ires *CE1 @segid @ires HE1   178.3900
+       DIST  @segid @ires NE2  @segid @ires CE1    1.3256
+       ANGLE @segid @ires NE2  @segid @ires CE1  @segid @ires ND1   108.5000
+       ANGLE @segid @ires ND1  @segid @ires CE1  @segid @ires HE1   125.7600
+       DIST  @segid @ires CE1  @segid @ires HE1    1.0799
+
+       ! Correct HE2 improper:
+       ! IC CE1 CD2 *NE2 HE2   1.3256 108.8200 -172.9400 125.5200 1.0020
+       DIHE  @segid @ires CE1  @segid @ires CD2  @segid @ires *NE2 @segid @ires HE2  -172.9400
+       DIST  @segid @ires CE1  @segid @ires NE2    1.3256
+       ANGLE @segid @ires CE1  @segid @ires NE2  @segid @ires CD2   108.8200
+       ANGLE @segid @ires CD2  @segid @ires NE2  @segid @ires HE2   125.5200
+       DIST  @segid @ires NE2  @segid @ires HE2    1.0020
+
+       ! Correct HD1 improper:
+       ! IC CE1 CG *ND1 HD1   1.3262 108.9000 171.4900 126.0900 1.0018
+       DIHE  @segid @ires CE1  @segid @ires CG   @segid @ires *ND1 @segid @ires HD1   171.4900
+       DIST  @segid @ires CE1  @segid @ires ND1    1.3262
+       ANGLE @segid @ires CE1  @segid @ires ND1  @segid @ires CG    108.9000
+       ANGLE @segid @ires CG   @segid @ires ND1  @segid @ires HD1   126.0900
+       DIST  @segid @ires ND1  @segid @ires HD1    1.0018
+
+    END
+ endif
+
+ incr ires
+if ires le @reslast goto patch_hsp_ic
+
+prnlev 5
+
+! Dynamic Seeding: ACE requires CAY, standard NTER requires standard backbone atoms
+if @NCAP .eq. ACE then
+   ic seed 1 CAY 1 CY 1 N
+else
+   ic seed 1 N 1 CA 1 C
+endif
+
+ic build
+
+hbuild sele hydrogen end
+
+! patch dummy atoms for ASP and GLU
+! ---------------------------------
+define ANY sele bynu 1 end
+set res1 = ?selresi
+calc reslast = ?selresi + ?nres -1
+
+set ires @res1
+
+prnlev -1
+
+label patch
+ define residue sele segid @segid .and. resid @ires show end
+ if ?selresn eq asp patch aspp2 @segid @ires
+ if ?selresn eq glu patch glup2 @segid @ires
+ incr ires
+if ires le @reslast goto patch
+
+autogen angles dihed
+prnlev 5
+
+hbuild sele segi @segid .and. resn asp .and. type hd* end
+hbuild sele segi @segid .and. resn glu .and. type he* end
+
+! Edit Dihedrals for Glupp2 and Aspp2
+!------------------------------------
+define ANY sele bynu 1 end
+set res1 = ?selresi
+calc reslast = ?selresi + ?nres -1
+
+ic gene
+ic fill
+
+set ires @res1
+
+prnlev -1
+label edit
+ define residue sele segid @segid .and. resid @ires show end
+ if ?selresn eq asp then
+    IC EDIT
+       DIHE @segid @ires CB @segid @ires CG @segid @ires OD1 @segid @ires HD1 180.0
+       DIHE @segid @ires CB @segid @ires CG @segid @ires OD2 @segid @ires HD2 180.0
+    END
+ endif
+ if ?selresn eq glu then
+    IC EDIT
+       DIHE @segid @ires CG @segid @ires CD @segid @ires OE1 @segid @ires HE1 180.0
+       !DIHE @segid @ires CG @segid @ires CD @segid @ires OE2 @segid @ires HE2 180.0
+    END
+ endif
+ incr ires
+if ires le @reslast goto edit
+
+prnlev 5
+
+! Safely initialize ASP dummy hydrogens only if they exist
+define check_asp sele segi @segid .and. resn asp .and. type hd* end
+if ?nsel .gt. 0 then
+   coor init sele segi @segid .and. resn asp .and. type hd* end
+endif
+
+! Safely initialize GLU dummy hydrogens only if they exist
+define check_glu sele segi @segid .and. resn glu .and. type he* end
+if ?nsel .gt. 0 then
+   coor init sele segi @segid .and. resn glu .and. type he* end
+endif
+
+ic build
+
+! Fast minimization
+! ------------------------
+define heavy sele .not. type H* end
+
+cons harm clear
+cons harm force 50.0 sele heavy end
+
+mini   sd nstep  10 nprint 10 step 0.005
+mini abnr nstep  10 nprint 10 step 0.005
+
+! === WRITE DYNAMIC SYSTEM FILES ===
+open unit 1 write card name @{OUTNAME}.psf
+write psf card unit 1
+close unit 1
+
+open unit 1 write card name @{OUTNAME}.crd
+write coor card unit 1
+close unit 1
+
+open unit 1 write form name @{OUTNAME}.pdb
+write coor pdb unit 1
+close unit 1
+
+stop
