@@ -36,6 +36,11 @@ Analysis utilities are available for:
 
 | Directory | Purpose |
 | --- | --- |
+| `anal/arex/` | AREX exchange diagnostics and residue-centric multi-pH analysis |
+| `anal/titration/` | CpHMD lambda trajectories, titration curves, pKa, and coupled-site analysis |
+| `anal/finite_size/` | Box-volume and water-density diagnostics for finite-size comparisons |
+| `anal/rmsd/` | Trajectory RMSD with separate fit and measurement masks |
+| `anal/rmsf/` | Per-residue backbone, side-chain, or total heavy-atom RMSF |
 | `anal/dihedral/` | Dihedral-angle analysis |
 | `anal/distance/` | Interatomic distance analysis |
 | `anal/hbond/` | Hydrogen-bond analysis |
@@ -44,7 +49,7 @@ Analysis utilities are available for:
 | `anal/sasa/` | Solvent-accessible surface area analysis |
 | `anal/water_wire/` | Water proximity and water-wire analysis |
 
-Most analysis directories contain their own `README.md` with tool-specific usage instructions.
+Each analysis directory is intended to remain usable on its own, with a local `README.md` for workflow-specific details.
 
 ## Repository layout
 
@@ -68,6 +73,11 @@ ez_cphmd/
 │   └── amber/
 │
 └── anal/
+    ├── arex/
+    ├── titration/
+    ├── finite_size/
+    ├── rmsd/
+    ├── rmsf/
     ├── dihedral/
     ├── distance/
     ├── hbond/
@@ -313,7 +323,61 @@ If a structure falls outside the supported scope, the preparation scripts genera
 
 ## Analysis tools
 
-Each analysis utility is kept in its own directory.
+Each analysis utility is kept in a focused directory. See the local README for full options and workflow-specific assumptions.
+
+### AREX
+
+```text
+anal/arex/analyze_arex.sh
+anal/arex/plot_arex_analysis.py
+anal/arex/arex_acceptance_rate.sh
+anal/arex/roundtrip_check.py
+```
+
+Exchange diagnostics report neighboring-pH acceptance, replica slot occupancy, movement, and complete round trips. The structural AREX workflow analyzes each pH-slot trajectory independently and summarizes residue SASA, hydration shells, hydrogen bonds, RMSD, and radius of gyration.
+
+See [`anal/arex/README.md`](anal/arex/README.md).
+
+### Titration
+
+```text
+anal/titration/calc_titration.py
+```
+
+Analyzes Amber CpHMD lambda trajectories in single-site, histidine, or coupled two-site modes. Coupled mode includes joint protonation-state populations, macroscopic stepwise pKa fitting, residue-specific conditional fits, four-state thermodynamic modeling, and optional block/bootstrap/convergence diagnostics.
+
+See [`anal/titration/README.md`](anal/titration/README.md).
+
+### Finite-size diagnostics
+
+```text
+anal/finite_size/check_finite_size_effect.sh
+anal/finite_size/pool_finite_size_effect.sh
+```
+
+Reports box-volume and water-number-density statistics for one trajectory or a pooled trajectory set. These quantities are intended to support finite-size comparisons across systems rather than serve as a finite-size test by themselves.
+
+See [`anal/finite_size/README.md`](anal/finite_size/README.md).
+
+### RMSD
+
+```text
+anal/rmsd/calc_rmsd.py
+```
+
+Fits trajectories using one CPPTRAJ mask and can measure RMSD with a different mask on the aligned coordinates.
+
+See [`anal/rmsd/README.md`](anal/rmsd/README.md).
+
+### RMSF
+
+```text
+anal/rmsf/calc_rmsf.py
+```
+
+Calculates per-residue backbone, side-chain, or total heavy-atom RMSF after backbone fitting.
+
+See [`anal/rmsf/README.md`](anal/rmsf/README.md).
 
 ### Dihedral
 
@@ -374,6 +438,8 @@ anal/water_wire/calc_water_wire.py
 
 The directory also contains smoke tests and reference outputs for the supported force-field workflows.
 
+See [`anal/water_wire/README.md`](anal/water_wire/README.md).
+
 ## Requirements
 
 Exact requirements depend on the workflow being used.
@@ -388,7 +454,7 @@ Preparation may require:
 - `cpptraj`
 - Python 3
 
-The analysis scripts may have additional Python-package requirements described in their individual READMEs.
+Some analysis scripts additionally use NumPy and Matplotlib. `calc_titration.py` can use SciPy for numerical optimization but includes fallback fitting paths when SciPy is unavailable. See the individual analysis READMEs for tool-specific requirements.
 
 ## Output and reproducibility
 
@@ -403,4 +469,3 @@ Before starting production simulations, users should inspect the generated struc
 If these tools are used in published work, please cite the relevant CpHMD methodology, molecular dynamics software, and force field used in the simulations.
 
 Repository-specific citation information can be added here as appropriate.
-
